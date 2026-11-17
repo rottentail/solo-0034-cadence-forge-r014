@@ -265,6 +265,30 @@
       "verification": "python3 scripts/workflow_check.py --workflow wav-render"
     },
     {
+      "id": "audio-routing",
+      "name": "audio-routing",
+      "entry": "POST /forge/v1/renders + audio_takes",
+      "success": "冻结的多路径路由决定、审片混音及独立WAV分轨",
+      "failure": "未知流序号、重复角色或在无声音源上路由时拒绝",
+      "steps": [
+        "入口解码与领域事实读取",
+        "流序号按首次探测事实解析并冻结进计划，预览与成片共享同一身份和时间关系",
+        "冻结的多路径路由决定、审片混音及独立WAV分轨"
+      ],
+      "module_ids": [
+        "http",
+        "application",
+        "timeline",
+        "domain",
+        "media",
+        "encoding",
+        "inspection",
+        "objects",
+        "journal"
+      ],
+      "verification": "python3 scripts/workflow_check.py --workflow audio-routing"
+    },
+    {
       "id": "idempotent-submit",
       "name": "idempotent-submit",
       "entry": "POST /forge/v1/renders + Idempotency-Key",

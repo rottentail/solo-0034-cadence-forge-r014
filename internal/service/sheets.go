@@ -57,6 +57,14 @@ func (s *Service) Preview(sheetID, recipeID string) (domain.Plan, error) {
 	if err != nil {
 		return plan, err
 	}
+	// Preview exposes the same stream identity and time relationship that a
+	// submit would freeze, so sound editing and picture editing read one plan.
+	// It does not run a media pass and never invents a level.
+	decision, err := domain.DecideRouting(plan, domain.RoutingMeasurement{WindowMS: plan.DurationMS})
+	if err != nil {
+		return plan, err
+	}
+	plan.Routing = decision
 	plan.VTT = caption.VTT(caption.Map(sheet, plan))
 	return plan, nil
 }

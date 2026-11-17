@@ -10,6 +10,7 @@ import (
 	"io"
 	"math"
 	"os"
+	"path/filepath"
 )
 
 func Digest(path string) (string, int64, error) {
@@ -48,5 +49,40 @@ func Artifact(ctx context.Context, prober media.Prober, path string, r domain.Re
 	if err != nil {
 		return domain.Inspection{}, err
 	}
-	return domain.Inspection{Media: m, Digest: digest, Bytes: n, DurationDeltaMS: delta}, nil
+	inspection := domain.Inspection{Media: m, Digest: digest, Bytes: n, DurationDeltaMS: delta}
+	if r.Plan.Routing != nil {
+		for _, route := range r.Plan.Routing.Paths {
+			if route.StemFile == "" {
+				continue
+			}
+			stem, err := Stem(ctx, prober, filepath.Join(filepath.Dir(path), route.StemFile), route, r)
+			if err != nil {
+				return domain.Inspection{}, err
+			}
+			inspection.Stems = append(inspection.Stems, stem)
+		}
+	}
+	return inspection, nil
+}
+
+// Stem verifies one preserved path stem is a real two-channel PCM file aligned
+// with the composition, and reports its own digest and duration delta.
+func Stem(ctx context.Context, prober media.Prober, path string, route domain.RoutePath, r domain.Render) (domain.StemInspection, error) {
+	m, err := prober.Probe(ctx, path)
+	if err != nil {
+		return domain.StemInspection{}, err
+	}
+	delta := m.DurationMS - r.Plan.DurationMS
+	tolerance := int64(100)
+	if math.Abs(float64(delta)) > float64(tolerance) {
+		return domain.StemInspection{}, fmt.Errorf("stem %s duration delta %dms exceeds %dms", route.Role, delta, tolerance)
+	}
+	if !m.Audio || m.Video || m.Channels != 2 || m.SampleRate != r.Recipe.SampleRate || m.AudioCodec != "pcm_s16le" {
+		return domain.StemInspection{}, fmt.Errorf("stem %s contract mismatch", route.Role)
+	}
+	digest, n, err := Digest(path)
+	if err != nil {
+		return domain.StemInspection{}, err
+	}
+	return domain.StemInspection{Role: route.Role, File: route.StemFile, Digest: digest, Bytes: n, Channels: m.Channels, SampleRate: m.SampleRate, DurationDeltaMS: delta}, nil
 }

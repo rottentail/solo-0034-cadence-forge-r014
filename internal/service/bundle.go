@@ -39,6 +39,15 @@ func (s *Service) Verify(ctx context.Context, id string) (domain.Inspection, err
 	if in.Digest != r.Artifact.Inspection.Digest || in.Bytes != r.Artifact.Inspection.Bytes {
 		return in, fmt.Errorf("committed artifact integrity failed")
 	}
+	if len(in.Stems) != len(r.Artifact.Inspection.Stems) {
+		return in, fmt.Errorf("committed stem set changed")
+	}
+	for i, stem := range in.Stems {
+		committed := r.Artifact.Inspection.Stems[i]
+		if stem.Role != committed.Role || stem.File != committed.File || stem.Digest != committed.Digest || stem.Bytes != committed.Bytes {
+			return in, fmt.Errorf("committed stem %s integrity failed", stem.Role)
+		}
+	}
 	captions, err := os.ReadFile(filepath.Join(dir, r.Artifact.CaptionFile))
 	if err != nil {
 		return in, err
@@ -57,7 +66,11 @@ func (s *Service) Bundle(ctx context.Context, id string, dest io.Writer) error {
 		return err
 	}
 	z := zip.NewWriter(dest)
-	for _, name := range []string{r.Artifact.Filename, r.Artifact.CaptionFile} {
+	members := []string{r.Artifact.Filename, r.Artifact.CaptionFile}
+	for _, stem := range r.Artifact.Inspection.Stems {
+		members = append(members, stem.File)
+	}
+	for _, name := range members {
 		f, err := os.Open(filepath.Join(dir, name))
 		if err != nil {
 			z.Close()

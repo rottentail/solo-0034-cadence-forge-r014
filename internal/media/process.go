@@ -40,3 +40,21 @@ func Run(ctx context.Context, binary string, args []string, limit int) ([]byte, 
 	}
 	return out.Bytes(), nil
 }
+
+// RunReport runs a media tool whose human-readable report is written to stderr
+// (FFmpeg's astats and loudnorm summaries are) and returns that report. A
+// non-zero exit still returns the captured report alongside the error so a
+// failed pass can be explained.
+func RunReport(ctx context.Context, binary string, args []string, limit int) (string, error) {
+	cmd := exec.CommandContext(ctx, binary, args...)
+	var out, errout LimitedBuffer
+	out.Limit = limit
+	errout.Limit = limit
+	cmd.Stdout = &out
+	cmd.Stderr = &errout
+	err := cmd.Run()
+	if err != nil {
+		return errout.String(), fmt.Errorf("media process: %w: %s", err, errout.String())
+	}
+	return errout.String(), nil
+}

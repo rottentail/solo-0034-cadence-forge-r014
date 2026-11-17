@@ -34,6 +34,21 @@ def main():
                         '-f', 'lavfi', '-i', 'sine=frequency=660:sample_rate=48000:duration=4',
                         '-c:v', 'libx264', '-preset', 'ultrafast', '-threads', '1',
                         '-c:a', 'aac', '-shortest', str(scratch/'calibration.mp4')], check=True, timeout=30)
+        # A three-path source: program 660, field with only its right channel
+        # inverted, reference fully inverted. It is the real conflict the
+        # routing decision has to resolve for a two-channel review.
+        subprocess.run([ffmpeg, '-nostdin', '-hide_banner', '-loglevel', 'error', '-y',
+                        '-f', 'lavfi', '-i', 'testsrc2=size=160x90:rate=24:duration=3',
+                        '-f', 'lavfi', '-i', 'sine=frequency=440:sample_rate=48000:duration=3',
+                        '-f', 'lavfi', '-i', 'sine=frequency=440:sample_rate=48000:duration=3',
+                        '-f', 'lavfi', '-i', 'sine=frequency=440:sample_rate=48000:duration=3',
+                        '-filter_complex',
+                        '[1:a]pan=stereo|c0=c0|c1=c0[program];'
+                        '[2:a]pan=stereo|c0=c0|c1=-1*c0[field];'
+                        '[3:a]pan=stereo|c0=-1*c0|c1=-1*c0[reference]',
+                        '-map', '0:v', '-map', '[program]', '-map', '[field]', '-map', '[reference]',
+                        '-c:v', 'libx264', '-preset', 'ultrafast', '-threads', '1',
+                        '-c:a', 'aac', '-b:a', '192k', '-shortest', str(scratch/'routed.mp4')], check=True, timeout=30)
         with socket.socket() as sock:
             sock.bind(('127.0.0.1', 0))
             port = sock.getsockname()[1]
@@ -162,6 +177,41 @@ def main():
                 need(audio_done['state'] == 'succeeded', str(audio_done['attempts']))
                 need(audio_done['artifact']['inspection']['media']['audio_codec'] == 'pcm_s16le', 'audio codec mismatch')
                 observe('wav-render', 'trimmed stereo PCM WAV encoded with loudness filter')
+            if args.workflow in ('all', 'audio-routing'):
+                routed = request('POST', '/sources?name=three-path', (scratch/'routed.mp4').read_bytes(), status=201)
+                routed_id = routed['id']
+                need(len(routed['media'].get('audio_streams') or []) == 3, 'probe did not record three audio streams')
+                takes = [dict(stream=0, role='program'), dict(stream=1, role='field'), dict(stream=2, role='reference')]
+                routing_body = dict(recipe_body, name='routed-review', audio_review_policy='intelligible')
+                routing_recipe = request('POST', '/recipes', routing_body, status=201)
+                routed_sheet = request('POST', '/sheets', dict(name='routed-sheet', spans=[
+                    dict(source_id=routed_id, in_ms=0, out_ms=1500, audio_takes=takes)]), status=201)
+                preview = request('GET', '/sheets/'+routed_sheet['id']+'/preview?recipe_id='+routing_recipe['id'])
+                need([p['role'] for p in preview['routing']['paths']] == ['program', 'field', 'reference'], 'preview routing paths mismatch')
+                need(all(not p['measured'] for p in preview['routing']['paths']), 'preview invented measurements')
+                request('GET', '/renders/'+rid+'/artifact?stem=program', status=400)
+                routed_render = request('POST', '/renders', dict(req, sheet_id=routed_sheet['id'], recipe_id=routing_recipe['id']), {'Idempotency-Key': 'routed'}, status=202)
+                routed_done = wait_render(routed_render['id'])
+                need(routed_done['state'] == 'succeeded', str(routed_done['attempts']))
+                decision = routed_done['plan']['routing']
+                need(decision['anchor_role'] == 'program' and decision['mode'] == 'multi-path', 'routing decision mismatch')
+                by_role = {p['role']: p for p in decision['paths']}
+                need(by_role['field']['left_correlation_to_anchor'] is not None, 'routing did not measure phase')
+                need(by_role['reference']['review_polarity'] == 'both-inverted', 'fully inverted path not treated as conflicting')
+                need(by_role['field']['review_gain_db'] < 0, 'non-anchor path was not attenuated')
+                need(any('cannot remain both fully separated' in n for n in decision['loss_notes']), 'three-path loss tradeoff not stated')
+                stems = routed_done['artifact']['inspection']['stems']
+                need({s['role'] for s in stems} == {'program', 'field', 'reference'}, 'stem inspection mismatch')
+                for role in ('program', 'field', 'reference'):
+                    wav = request('GET', '/renders/'+routed_done['id']+'/artifact?stem='+role, raw=True)
+                    need(wav[:4] == b'RIFF', 'stem is not a WAV file')
+                observe('audio-routing', 'three probed paths measured, conflicting phase explained, stems preserved')
+                if args.workflow in ('all', 'bundle'):
+                    packed = request('GET', '/renders/'+routed_done['id']+'/bundle', raw=True)
+                    with zipfile.ZipFile(io.BytesIO(packed)) as z:
+                        need({'stem-program.wav', 'stem-field.wav', 'stem-reference.wav'} <= set(z.namelist()), 'routed bundle omitted stems')
+                        frozen = json.loads(z.read('composition.json'))
+                        need(frozen['plan']['routing'] == decision, 'bundle routing drifted')
             request('DELETE', '/sources/'+sid, status=409)
             observe('retire-source', 'historical sheet reference prevents retirement')
             if args.workflow in ('all', 'cancel', 'retry', 'restart-recover'):

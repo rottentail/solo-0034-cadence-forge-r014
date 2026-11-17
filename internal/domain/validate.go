@@ -28,6 +28,13 @@ func ValidateRecipe(r Recipe) error {
 	if r.Normalize && (math.IsNaN(r.TargetLUFS) || math.IsInf(r.TargetLUFS, 0) || r.TargetLUFS < -36 || r.TargetLUFS > -9) {
 		return Invalid("normalization target must be -36..-9 LUFS")
 	}
+	policy := r.AudioReviewPolicy
+	if policy != "" && policy != PolicyIntelligible && policy != PolicyFullSum && policy != PolicyAnchorOnly {
+		return Invalid("audio_review_policy must be intelligible, full-sum or anchor-only")
+	}
+	if r.AudioReviewAnchor != "" && !KnownAudioRole(r.AudioReviewAnchor) {
+		return Invalid("audio_review_anchor must be program, field or reference")
+	}
 	return nil
 }
 func ValidateSheet(s Sheet, sources map[string]Source) error {
@@ -52,6 +59,28 @@ func ValidateSheet(s Sheet, sources map[string]Source) error {
 		if math.IsNaN(p.GainDB) || math.IsInf(p.GainDB, 0) || p.GainDB < -60 || p.GainDB > 12 {
 			return Invalid("span %d has invalid gain", i)
 		}
+		roles := map[string]bool{}
+		streams := map[int]bool{}
+		for j, take := range p.AudioTakes {
+			role := NormalizeAudioRole(take.Role)
+			if !KnownAudioRole(role) {
+				return Invalid("span %d take %d has unknown audio role", i, j)
+			}
+			if roles[role] {
+				return Invalid("span %d routes audio role %s twice", i, role)
+			}
+			roles[role] = true
+			if streams[take.Stream] {
+				return Invalid("span %d routes audio stream %d twice", i, take.Stream)
+			}
+			streams[take.Stream] = true
+			if take.Stream < 0 {
+				return Invalid("span %d take %d has invalid audio stream", i, j)
+			}
+			if _, ok := source.Media.AudioStreamAt(take.Stream); !ok {
+				return Invalid("span %d take %d references audio stream %d beyond probed streams", i, j, take.Stream)
+			}
+		}
 		duration += p.OutMS - p.InMS
 	}
 	if duration > 120000 {
@@ -70,6 +99,77 @@ func ValidateSheet(s Sheet, sources map[string]Source) error {
 		}
 		if !utf8.ValidString(c.Text) || strings.TrimSpace(c.Text) == "" || len(c.Text) > 2000 || strings.Contains(c.Text, "-->") || strings.ContainsAny(c.Text, "\x00\r") {
 			return Invalid("cue %d has invalid text", i)
+		}
+	}
+	return nil
+}
+
+// ValidateRouting checks that a frozen routing record is internally coherent
+// and consistent with the timeline it describes. It is applied when state is
+// loaded and when a render plan is persisted, so a corrupt decision cannot be
+// executed silently.
+func ValidateRouting(plan Plan) error {
+	r := plan.Routing
+	if r == nil {
+		return nil
+	}
+	if r.Schema != 1 {
+		return fmt.Errorf("unsupported routing schema")
+	}
+	if r.Mode != "single-path" && r.Mode != "multi-path" {
+		return fmt.Errorf("invalid routing mode")
+	}
+	switch r.Policy {
+	case PolicyIntelligible, PolicyFullSum, PolicyAnchorOnly:
+	default:
+		return fmt.Errorf("invalid routing policy")
+	}
+	if !KnownAudioRole(r.AnchorRole) {
+		return fmt.Errorf("invalid routing anchor")
+	}
+	if r.WindowMS < 0 || r.WindowMS > plan.DurationMS {
+		return fmt.Errorf("routing window exceeds plan duration")
+	}
+	if len(r.Paths) == 0 {
+		return fmt.Errorf("routing records no paths")
+	}
+	seen := map[string]bool{}
+	anchorSeen := false
+	for _, path := range r.Paths {
+		if !KnownAudioRole(path.Role) || seen[path.Role] {
+			return fmt.Errorf("invalid or duplicate routing path")
+		}
+		seen[path.Role] = true
+		if path.Role == r.AnchorRole {
+			anchorSeen = true
+		}
+		if path.Placements <= 0 || path.Takes < 0 || path.SilentPlacements < 0 || path.SilentPlacements > path.Placements {
+			return fmt.Errorf("invalid routing path placement counts")
+		}
+		if path.Channels < 1 || path.Channels > 8 {
+			return fmt.Errorf("invalid routing path channels")
+		}
+		switch path.ReviewPolarity {
+		case "normal", "left-inverted", "right-inverted", "both-inverted":
+		default:
+			return fmt.Errorf("invalid review polarity")
+		}
+		if path.ReviewIncluded && path.ReviewGainDB < -60 {
+			return fmt.Errorf("invalid review gain")
+		}
+		if (r.Mode == "single-path") != (len(r.Paths) == 1) {
+			return fmt.Errorf("routing mode disagrees with path count")
+		}
+	}
+	if !anchorSeen {
+		return fmt.Errorf("routing anchor has no path")
+	}
+	if r.Mode == "single-path" {
+		if r.Paths[0].Role != r.AnchorRole {
+			return fmt.Errorf("single-path routing anchors a different path")
+		}
+		if r.Paths[0].StemFile != "" {
+			return fmt.Errorf("single-path routing must not claim stems")
 		}
 	}
 	return nil
@@ -130,6 +230,9 @@ func ValidateState(s State) error {
 			return err
 		}
 		if err := ValidateRecipe(r.Recipe); err != nil {
+			return err
+		}
+		if err := ValidateRouting(r.Plan); err != nil {
 			return err
 		}
 	}

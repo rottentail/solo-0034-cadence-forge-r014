@@ -10,9 +10,19 @@ type Attempt struct {
 	Detail     string     `json:"detail,omitempty"`
 }
 type Inspection struct {
-	Media           Media  `json:"media"`
+	Media           Media            `json:"media"`
+	Digest          string           `json:"digest"`
+	Bytes           int64            `json:"bytes"`
+	DurationDeltaMS int64            `json:"duration_delta_ms"`
+	Stems           []StemInspection `json:"stems,omitempty"`
+}
+type StemInspection struct {
+	Role            string `json:"role"`
+	File            string `json:"file"`
 	Digest          string `json:"digest"`
 	Bytes           int64  `json:"bytes"`
+	Channels        int    `json:"channels"`
+	SampleRate      int    `json:"sample_rate"`
 	DurationDeltaMS int64  `json:"duration_delta_ms"`
 }
 type Artifact struct {

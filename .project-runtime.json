@@ -63,6 +63,11 @@
       "timeout_seconds": 120
     },
     {
+      "workflow_id": "audio-routing",
+      "command": "python3 scripts/workflow_check.py --workflow audio-routing",
+      "timeout_seconds": 120
+    },
+    {
       "workflow_id": "idempotent-submit",
       "command": "python3 scripts/workflow_check.py --workflow idempotent-submit",
       "timeout_seconds": 120

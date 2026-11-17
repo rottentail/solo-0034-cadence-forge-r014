@@ -74,6 +74,20 @@ func (a API) artifact(w http.ResponseWriter, r *http.Request) {
 		name = render.Artifact.CaptionFile
 		w.Header().Set("Content-Type", "text/vtt; charset=utf-8")
 	}
+	if role := r.URL.Query().Get("stem"); role != "" {
+		found := ""
+		for _, stem := range render.Artifact.Inspection.Stems {
+			if stem.Role == role {
+				found = stem.File
+			}
+		}
+		if found == "" {
+			failure(w, domain.Invalid("render has no stem for that audio role"))
+			return
+		}
+		name = found
+		w.Header().Set("Content-Type", "audio/wav")
+	}
 	w.Header().Set("Content-Disposition", `attachment; filename="`+name+`"`)
 	http.ServeFile(w, r, filepath.Join(dir, name))
 }
